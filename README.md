@@ -46,3 +46,8 @@ then copy `loot.desktop` to (e.g.) `~/.local/share/applications`.
 
 To start loot automatically upon login, copy (or symlink/hardlink) the desktop
 entry to `~/.config/autostart/`.
+
+## Dependencies
+
+Loot is written in C and depends on GTK+ 3. It runs on Linux and maybe on other
+POSIX systems, too.
