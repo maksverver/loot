@@ -1,0 +1,8 @@
+[Desktop Entry]
+Version=1.1
+Type=Application
+Name=Loot
+Comment=Manage openable/closeable resources
+Categories=Utility
+Exec=loot
+StartupNotify=false
