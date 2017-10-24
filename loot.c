@@ -111,6 +111,17 @@ static int box_compare(const void *a, const void *b) {
   return strcmp(box1->name, box2->name);
 }
 
+static GdkPixbuf *get_icon_for_status(enum BoxStatus status) {
+  switch (status) {
+  case BOX_CLOSED:
+    return icon_box_closed;
+  case BOX_OPENED:
+    return icon_box_opened;
+  case BOX_ERROR:
+  default:
+    return icon_box_error;
+  }
+}
 static enum BoxStatus get_combined_status() {
   int num_open = 0;
   int num_error = 0;
@@ -172,6 +183,22 @@ static void load_icons(GError **error) {
 #undef LOAD_ICON
 }
 
+static void clear_box(gpointer obj) {
+  struct BoxConfig *box = obj;
+  g_free((gpointer)box->name);
+  box->name = NULL;
+  g_free((gpointer)box->path);
+  box->path = NULL;
+  box->status = BOX_ERROR;
+}
+
+static GArray *new_box_array() {
+  GArray *array = g_array_new(
+      /*zero_terminated=*/ FALSE, /*clear=*/ TRUE, sizeof(struct BoxConfig));
+  g_array_set_clear_func(array, clear_box);
+  return array;
+}
+
 static GArray *load_boxes(GError **error) {
   // Determine config directory as ${XDG_CONFIG_HOME}/loot, or
   // ${HOME)/.config/loot if ${XDG_CONFIG_HOME} is not set.
@@ -194,8 +221,7 @@ static GArray *load_boxes(GError **error) {
   }
 
   // Find executables in the config dir, and add them to the array of boxes.
-  GArray *boxes = g_array_new(
-      /*zero_terminated=*/ FALSE, /*clear=*/ TRUE, sizeof(struct BoxConfig));
+  GArray *boxes = new_box_array();
   for (const char *name; (name = g_dir_read_name(dir)) != NULL; ) {
     // Skip empty/hidden file (as indicated by leading dot).
     if (!*name || *name == '.') continue;
@@ -211,27 +237,33 @@ static GArray *load_boxes(GError **error) {
     g_array_append_val(boxes, config);
   }
   g_dir_close(dir);
-  if (boxes->len == 0) {
-    if (*error == NULL) {
-      *error = g_error_new(
-          0, 0, "Config dir (%s) contains no executables!", config_dir);
-    }
-    return NULL;
-  }
   g_array_sort(boxes, box_compare);
   return boxes;
 }
 
-static GdkPixbuf *get_icon_for_status(enum BoxStatus status) {
-  switch (status) {
-  case BOX_CLOSED:
-    return icon_box_closed;
-  case BOX_OPENED:
-    return icon_box_opened;
-  case BOX_ERROR:
-  default:
-    return icon_box_error;
+static void reload_status_icon() {
+  assert(status_icon != NULL);
+  gtk_status_icon_set_from_pixbuf(status_icon,
+      get_icon_for_status(get_combined_status()));
+}
+
+static void reload_boxes() {
+  assert(boxes != NULL);
+  GError *error = NULL;
+  GArray *new_boxes = load_boxes(&error);
+  if (error != NULL) {
+    assert(new_boxes == NULL);
+    show_error(error);
+    g_error_free(error);
+  } else {
+    assert(new_boxes != NULL);
+    g_array_free(boxes, TRUE);
+    boxes = new_boxes;
+    for (int i = 0; i < boxes->len; ++i) {
+      box_refresh_status(&g_array_index(boxes, struct BoxConfig, i));
+    }
   }
+  reload_status_icon();
 }
 
 static void activate_menu_item_box(GtkMenuItem *menu_item, gpointer user_data) {
@@ -253,18 +285,11 @@ static void activate_menu_item_box(GtkMenuItem *menu_item, gpointer user_data) {
   } else {
     box_refresh_status(box);
   }
-
-  // Update notification status icon.
-  gtk_status_icon_set_from_pixbuf(status_icon,
-      get_icon_for_status(get_combined_status()));
+  reload_status_icon();
 }
 
 static void activate_menu_item_reload(GtkMenuItem *menu_item, gpointer user_data) {
-  for (int i = 0; i < boxes->len; ++i) {
-    box_refresh_status(&g_array_index(boxes, struct BoxConfig, i));
-  }
-  gtk_status_icon_set_from_pixbuf(status_icon,
-      get_icon_for_status(get_combined_status()));
+  reload_boxes();
 }
 
 static void activate_menu_item_quit(GtkMenuItem *menu_item, gpointer user_data) {
@@ -352,19 +377,7 @@ static void activate_application(GtkApplication *app, gpointer user_data) {
     return;
   }
 
-  assert(boxes == NULL);
-  boxes = load_boxes(&error);
-  if (error != NULL) {
-    show_error(error);
-    g_error_free(error);
-    return;
-  }
-  for (int i = 0; i < boxes->len; ++i) {
-    box_refresh_status(&g_array_index(boxes, struct BoxConfig, i));
-  }
-
-  status_icon = gtk_status_icon_new_from_pixbuf(
-      get_icon_for_status(get_combined_status()));
+  status_icon = gtk_status_icon_new_from_pixbuf(icon_box_error);
   if (status_icon == NULL) {
     show_error_message("Failed to created status icon!");
     return;
@@ -375,6 +388,10 @@ static void activate_application(GtkApplication *app, gpointer user_data) {
       status_icon, "activate", G_CALLBACK(activate_status_icon), NULL);
   g_signal_connect(
       status_icon, "popup-menu", G_CALLBACK(popup_menu_status_icon), NULL);
+
+  assert(boxes == NULL);
+  boxes = new_box_array();
+  reload_boxes();
 
   // Explicitly hold the application since we didn't create a main window, but
   // we did pop up a status icon, and we want to continue running until the user
