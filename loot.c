@@ -29,6 +29,7 @@ struct BoxConfig {
 
 static GtkApplication *application;
 static const gchar *config_dir;
+static GFileMonitor *config_dir_monitor;
 
 static GdkPixbuf *icon_box_opened;
 static GdkPixbuf *icon_box_closed;
@@ -363,6 +364,11 @@ static void popup_menu_status_icon(
   gtk_menu_popup(GTK_MENU(menu), NULL, NULL, NULL, NULL, button, activate_time);
 }
 
+void config_dir_changed(GFileMonitor *monitor, GFile *file, GFile *other_file,
+    GFileMonitorEvent event_type, gpointer user_data) {
+  reload_boxes();
+}
+
 static gboolean setup_config_dir(GError **error) {
   gboolean success = FALSE;
   GFile *config_dir_file = g_file_new_for_path(config_dir);
@@ -373,8 +379,19 @@ static gboolean setup_config_dir(GError **error) {
     // Path does not exist (or is not a directory). Try to create it.
     success = g_file_make_directory_with_parents(config_dir_file, NULL, error);
   }
+
+  assert(config_dir_monitor == NULL);
+  config_dir_monitor =
+      g_file_monitor_directory(config_dir_file, G_FILE_MONITOR_NONE, NULL, NULL);
+  if (config_dir_monitor == NULL) {
+    // We don't consider this to be a fatal error, because the user can always
+    // refresh manually (and box configs don't change that often, anyway).
+    g_warning("Failed to monitor config directory (%s).\n", config_dir);
+  } else {
+    g_signal_connect(
+        config_dir_monitor, "changed", G_CALLBACK(config_dir_changed), NULL);
+  }
   g_object_unref(config_dir_file);
-  // TODO: setup file monitoring for changes.
   return success;
 }
 
@@ -452,6 +469,9 @@ int main (int argc, char **argv) {
   }
   if (config_dir) {
     g_free((gpointer)config_dir);
+  }
+  if (config_dir_monitor) {
+    g_object_unref(config_dir_monitor);
   }
   return status;
 }
