@@ -28,6 +28,7 @@ struct BoxConfig {
 };
 
 static GtkApplication *application;
+static const gchar *config_dir;
 
 static GdkPixbuf *icon_box_opened;
 static GdkPixbuf *icon_box_closed;
@@ -199,22 +200,22 @@ static GArray *new_box_array() {
   return array;
 }
 
-static GArray *load_boxes(GError **error) {
-  // Determine config directory as ${XDG_CONFIG_HOME}/loot, or
-  // ${HOME)/.config/loot if ${XDG_CONFIG_HOME} is not set.
-  char config_dir[1024];
+static const char *make_config_dir() {
   const char *config_home = getenv("XDG_CONFIG_HOME");
-  if (config_home != NULL) {
-    g_strlcpy(config_dir, config_home, sizeof(config_dir));
-  } else {
+  if (config_home == NULL || *config_home == '\0') {
+    // XDG_CONFIG_HOME is not set. Use "$HOME/.config/loot" instead.
     const char *home = getenv("HOME");
-    if (home == NULL) {
+    if (home == NULL || *home == '\0') {
       home = "/";
     }
-    g_strlcpy(config_dir, home, sizeof(config_dir));
-    g_strlcat(config_dir, "/.config", sizeof(config_dir));
+    return g_build_filename(home, ".config", "loot", NULL);
+  } else {
+    // "$XDG_CONFIG_HOME/loot"
+    return g_build_filename(config_home, "loot", NULL);
   }
-  g_strlcat(config_dir, "/loot", sizeof(config_dir));
+}
+
+static GArray *load_boxes(GError **error) {
   GDir *dir = g_dir_open(config_dir, 0, error);
   if (*error != NULL) {
     return NULL;
@@ -362,14 +363,38 @@ static void popup_menu_status_icon(
   gtk_menu_popup(GTK_MENU(menu), NULL, NULL, NULL, NULL, button, activate_time);
 }
 
+static gboolean setup_config_dir(GError **error) {
+  gboolean success = FALSE;
+  GFile *config_dir_file = g_file_new_for_path(config_dir);
+  if (g_file_query_file_type(config_dir_file, G_FILE_QUERY_INFO_NONE, NULL)
+      == G_FILE_TYPE_DIRECTORY) {
+    success = TRUE;
+  } else {
+    // Path does not exist (or is not a directory). Try to create it.
+    success = g_file_make_directory_with_parents(config_dir_file, NULL, error);
+  }
+  g_object_unref(config_dir_file);
+  // TODO: setup file monitoring for changes.
+  return success;
+}
+
 static void activate_application(GtkApplication *app, gpointer user_data) {
   if (application != NULL) {
     // activate has been called before. Don't reinitialize anything.
     return;
   }
+
   application = app;
+  config_dir = make_config_dir();
 
   GError *error = NULL;
+  setup_config_dir(&error);
+  if (error != NULL) {
+    show_error(error);
+    g_error_free(error);
+    return;
+  }
+
   load_icons(&error);
   if (error != NULL) {
     show_error(error);
@@ -424,6 +449,9 @@ int main (int argc, char **argv) {
   }
   if (icon_reload) {
     g_object_unref(icon_reload);
+  }
+  if (config_dir) {
+    g_free((gpointer)config_dir);
   }
   return status;
 }
