@@ -19,5 +19,7 @@ loot: $(OBJS)
 clean:
 	rm -f $(OBJS) $(BIN)
 
+install: $(BIN)
+	install -D -s $(BIN) "${DESTDIR}"/usr/bin/$(BIN)
 
-.PHONY: all clean
+.PHONY: all clean install

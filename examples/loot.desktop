@@ -4,5 +4,6 @@ Type=Application
 Name=Loot
 Comment=Manage openable/closeable resources
 Categories=Utility
+Icon=loot
 Exec=loot
 StartupNotify=false
