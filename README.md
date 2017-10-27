@@ -47,6 +47,16 @@ then copy `loot.desktop` to (e.g.) `~/.local/share/applications`.
 To start loot automatically upon login, copy (or symlink/hardlink) the desktop
 entry to `~/.config/autostart/`.
 
+## Packaging
+
+There is a `PKGBUILD` file which allows building Loot as an Arch Linux package.
+To install, simply run:
+
+```sh
+makepkg -fc
+sudo pacman -U loot-*.pkg.tar.xz 
+```
+
 ## Dependencies
 
 Loot is written in C and depends on GTK+ 3. It runs on Linux and maybe on other
