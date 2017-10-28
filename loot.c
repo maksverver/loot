@@ -344,6 +344,8 @@ static GtkWidget *create_menu_item(GtkWidget *icon, GtkWidget *label) {
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
   GtkWidget *menu_item = gtk_menu_item_new();
   // TODO: label/icon alignment (there is too much space left of the icon!)
+  // Apparently this is a known issue:
+  //  https://bugs.eclipse.org/bugs/show_bug.cgi?id=470298
   gtk_label_set_xalign(GTK_LABEL(label), 0.0);
   gtk_container_add(GTK_CONTAINER(box), icon);
   gtk_box_pack_end(GTK_BOX(box), label, TRUE, TRUE, 0);
