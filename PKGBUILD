@@ -14,6 +14,6 @@ package() {
 	install -D -m644 "${startdir}/examples/${pkgname}.desktop" \
 		"${pkgdir}/usr/share/applications/${pkgname}.desktop"
 
-	install -D -m644 "${startdir}/icons/box-closed.png" \
-		"${pkgdir}/usr/share/pixmaps/${pkgname}.png"
+	install -D -m644 "${startdir}/icons/box-opened.svg" \
+		"${pkgdir}/usr/share/pixmaps/${pkgname}.svg"
 }
