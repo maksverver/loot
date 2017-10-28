@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #define APP_TITLE "Loot"
+#define APP_ID "ch.verver.loot"
 
 enum BoxStatus {
   BOX_CLOSED,
@@ -25,21 +26,42 @@ struct BoxConfig {
   const char *name;
   const char *path;
   enum BoxStatus status;
+
+  // TODO: refactor this? It's a bit weird to have a pointer to the app in the
+  // box config struct. Currently, we use this to find the app from the
+  // activate_menu_item_box callback.
+  struct LootApp *app;
 };
 
-static GtkApplication *application;
-static const gchar *config_dir;
-static GFileMonitor *config_dir_monitor;
+struct Icons {
+  GdkPixbuf *box_opened;
+  GdkPixbuf *box_closed;
+  GdkPixbuf *box_error;
+  GdkPixbuf *reload;
+  GdkPixbuf *quit;
+};
 
-static GdkPixbuf *icon_box_opened;
-static GdkPixbuf *icon_box_closed;
-static GdkPixbuf *icon_box_error;
-static GdkPixbuf *icon_reload;
-static GdkPixbuf *icon_quit;
+struct LootApp {
+  // The global GTK gtk_app.
+  GtkApplication *gtk_app;
 
-static GArray *boxes;
+  // The config directory.
+  const gchar *config_dir;
 
-static GtkStatusIcon *status_icon;
+  // Directory monitor for the config directory. (May be NULL if the directory
+  // is not being monitored.)
+  GFileMonitor *config_dir_monitor;
+
+  // Loaded icons.
+  struct Icons icons;
+
+  // GTK status icon (not a widget).
+  GtkStatusIcon *status_icon;
+
+  // Array of struct BoxConfigs. Never NULL, but may be empty.
+  GArray *boxes;
+};
+
 
 pid_t run_command(const char *path, const char *arg, int pipe_fds[2]) {
   pid_t pid = fork();
@@ -113,18 +135,19 @@ static int box_compare(const void *a, const void *b) {
   return strcmp(box1->name, box2->name);
 }
 
-static GdkPixbuf *get_icon_for_status(enum BoxStatus status) {
+static GdkPixbuf *get_icon_for_status(
+    const struct Icons *icons, enum BoxStatus status) {
   switch (status) {
   case BOX_CLOSED:
-    return icon_box_closed;
+    return icons->box_closed;
   case BOX_OPENED:
-    return icon_box_opened;
+    return icons->box_opened;
   case BOX_ERROR:
   default:
-    return icon_box_error;
+    return icons->box_error;
   }
 }
-static enum BoxStatus get_combined_status() {
+static enum BoxStatus get_combined_status(const GArray *boxes) {
   int num_open = 0;
   int num_error = 0;
   for (int i = 0; i < boxes->len; ++i) {
@@ -168,11 +191,12 @@ static GdkPixbuf *load_icon(
   return pixbuf;
 }
 
-static void load_icons(GError **error) {
+static void load_icons(struct Icons *icons, GError **error) {
 #define LOAD_ICON(name) \
     extern const char _binary_icons_##name##_png_start[]; \
     extern const char _binary_icons_##name##_png_end[]; \
-    icon_##name = load_icon( \
+    assert(icons->name == NULL); \
+    icons->name = load_icon( \
         _binary_icons_##name##_png_start, \
         _binary_icons_##name##_png_end, \
         error); \
@@ -183,6 +207,20 @@ static void load_icons(GError **error) {
   LOAD_ICON(reload);
   LOAD_ICON(quit);
 #undef LOAD_ICON
+}
+
+static void unload_icons(struct Icons *icons) {
+#define UNLOAD_ICON(name) \
+  if (icons->name != NULL) { \
+    g_object_unref(icons->name); \
+    icons->name = NULL; \
+  }
+  UNLOAD_ICON(box_closed);
+  UNLOAD_ICON(box_opened);
+  UNLOAD_ICON(box_error);
+  UNLOAD_ICON(reload);
+  UNLOAD_ICON(quit);
+#undef UNLOAD_ICON
 }
 
 static void clear_box(gpointer obj) {
@@ -216,7 +254,7 @@ static const char *make_config_dir() {
   }
 }
 
-static GArray *load_boxes(GError **error) {
+static GArray *load_boxes(const char *config_dir, GError **error) {
   GDir *dir = g_dir_open(config_dir, 0, error);
   if (*error != NULL) {
     return NULL;
@@ -243,29 +281,29 @@ static GArray *load_boxes(GError **error) {
   return boxes;
 }
 
-static void reload_status_icon() {
-  assert(status_icon != NULL);
-  gtk_status_icon_set_from_pixbuf(status_icon,
-      get_icon_for_status(get_combined_status()));
+static void reload_status_icon(const struct LootApp *app) {
+  gtk_status_icon_set_from_pixbuf(app->status_icon,
+      get_icon_for_status(&app->icons, get_combined_status(app->boxes)));
 }
 
-static void reload_boxes() {
-  assert(boxes != NULL);
+static void reload_boxes(struct LootApp *app) {
   GError *error = NULL;
-  GArray *new_boxes = load_boxes(&error);
+  GArray *new_boxes = load_boxes(app->config_dir, &error);
   if (error != NULL) {
     assert(new_boxes == NULL);
     show_error(error);
     g_error_free(error);
   } else {
     assert(new_boxes != NULL);
-    g_array_free(boxes, TRUE);
-    boxes = new_boxes;
-    for (int i = 0; i < boxes->len; ++i) {
-      box_refresh_status(&g_array_index(boxes, struct BoxConfig, i));
+    g_array_free(app->boxes, TRUE);
+    app->boxes = new_boxes;
+    for (int i = 0; i < app->boxes->len; ++i) {
+      struct BoxConfig *box = &g_array_index(app->boxes, struct BoxConfig, i);
+      box->app = app;
+      box_refresh_status(box);
     }
   }
-  reload_status_icon();
+  reload_status_icon(app);
 }
 
 static void activate_menu_item_box(GtkMenuItem *menu_item, gpointer user_data) {
@@ -287,21 +325,25 @@ static void activate_menu_item_box(GtkMenuItem *menu_item, gpointer user_data) {
   } else {
     box_refresh_status(box);
   }
-  reload_status_icon();
+  reload_status_icon(box->app);
 }
 
-static void activate_menu_item_reload(GtkMenuItem *menu_item, gpointer user_data) {
-  reload_boxes();
+static void activate_menu_item_reload(
+    GtkMenuItem *menu_item, gpointer user_data) {
+  struct LootApp *app = user_data;
+  reload_boxes(app);
 }
 
-static void activate_menu_item_quit(GtkMenuItem *menu_item, gpointer user_data) {
-  g_application_release(G_APPLICATION(application));
+static void activate_menu_item_quit(
+    GtkMenuItem *menu_item, gpointer user_data) {
+  struct LootApp *app = user_data;
+  g_application_release(G_APPLICATION(app->gtk_app));
 }
 
 static GtkWidget *create_menu_item(GtkWidget *icon, GtkWidget *label) {
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
   GtkWidget *menu_item = gtk_menu_item_new();
-  // TODO: fix icon size and label/icon alignment
+  // TODO: label/icon alignment (there is too much space left of the icon!)
   gtk_label_set_xalign(GTK_LABEL(label), 0.0);
   gtk_container_add(GTK_CONTAINER(box), icon);
   gtk_box_pack_end(GTK_BOX(box), label, TRUE, TRUE, 0);
@@ -309,26 +351,28 @@ static GtkWidget *create_menu_item(GtkWidget *icon, GtkWidget *label) {
   return menu_item;
 }
 
-static GtkWidget *create_menu_item_quit() {
-  GtkWidget *icon = gtk_image_new_from_pixbuf(icon_quit);
+static GtkWidget *create_menu_item_quit(struct LootApp *app) {
+  GtkWidget *icon = gtk_image_new_from_pixbuf(app->icons.quit);
   GtkWidget *label = gtk_label_new("Quit");
   GtkWidget *item = create_menu_item(icon, label);
   g_signal_connect(
-      G_OBJECT(item), "activate", G_CALLBACK(activate_menu_item_quit), NULL);
+      G_OBJECT(item), "activate", G_CALLBACK(activate_menu_item_quit), app);
   return item;
 }
 
-static GtkWidget *create_menu_item_reload() {
-  GtkWidget *icon = gtk_image_new_from_pixbuf(icon_reload);
+static GtkWidget *create_menu_item_reload(struct LootApp *app) {
+  GtkWidget *icon = gtk_image_new_from_pixbuf(app->icons.reload);
   GtkWidget *label = gtk_label_new("Reload");
   GtkWidget *item = create_menu_item(icon, label);
   g_signal_connect(
-      G_OBJECT(item), "activate", G_CALLBACK(activate_menu_item_reload), NULL);
+      G_OBJECT(item), "activate", G_CALLBACK(activate_menu_item_reload), app);
   return item;
 }
 
 static GtkWidget *create_menu_item_box(struct BoxConfig *box) {
-  GtkWidget *icon = gtk_image_new_from_pixbuf(get_icon_for_status(box->status));
+  GtkWidget *icon =
+      gtk_image_new_from_pixbuf(
+          get_icon_for_status(&box->app->icons, box->status));
   GtkWidget *label = gtk_label_new(box->name);
   GtkWidget *item = create_menu_item(icon, label);
   g_signal_connect(
@@ -336,22 +380,22 @@ static GtkWidget *create_menu_item_box(struct BoxConfig *box) {
   return item;
 }
 
-static GtkWidget *create_menu() {
+static GtkWidget *create_menu(struct LootApp *app) {
   GtkWidget *menu = gtk_menu_new();
-  for (int i = 0; i < boxes->len; ++i) {
-    struct BoxConfig *box = &g_array_index(boxes, struct BoxConfig, i);
-    gtk_menu_shell_append(
-        GTK_MENU_SHELL(menu), create_menu_item_box(box));
+  for (int i = 0; i < app->boxes->len; ++i) {
+    struct BoxConfig *box = &g_array_index(app->boxes, struct BoxConfig, i);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), create_menu_item_box(box));
   }
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-  gtk_menu_shell_append(GTK_MENU_SHELL(menu), create_menu_item_reload());
-  gtk_menu_shell_append(GTK_MENU_SHELL(menu), create_menu_item_quit());
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu), create_menu_item_reload(app));
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu), create_menu_item_quit(app));
   return menu;
 }
 
 static void activate_status_icon(
     GtkStatusIcon *status_icon, gpointer user_data) {
-  GtkWidget *menu = create_menu();
+  struct LootApp *app = user_data;
+  GtkWidget *menu = create_menu(app);
   gtk_widget_show_all(menu);
   gtk_menu_popup_at_pointer(GTK_MENU(menu), /*trigger_event=*/NULL);
 }
@@ -359,17 +403,20 @@ static void activate_status_icon(
 static void popup_menu_status_icon(
     GtkStatusIcon *status_icon, guint button, guint activate_time,
     gpointer user_data) {
-  GtkWidget *menu = create_menu();
+  struct LootApp *app = user_data;
+  GtkWidget *menu = create_menu(app);
   gtk_widget_show_all(menu);
   gtk_menu_popup(GTK_MENU(menu), NULL, NULL, NULL, NULL, button, activate_time);
 }
 
 void config_dir_changed(GFileMonitor *monitor, GFile *file, GFile *other_file,
     GFileMonitorEvent event_type, gpointer user_data) {
-  reload_boxes();
+  struct LootApp *app = user_data;
+  reload_boxes(app);
 }
 
-static gboolean setup_config_dir(GError **error) {
+static gboolean setup_config_dir(
+      const gchar *config_dir, GFileMonitor **monitor, GError **error) {
   gboolean success = FALSE;
   GFile *config_dir_file = g_file_new_for_path(config_dir);
   if (g_file_query_file_type(config_dir_file, G_FILE_QUERY_INFO_NONE, NULL)
@@ -380,98 +427,116 @@ static gboolean setup_config_dir(GError **error) {
     success = g_file_make_directory_with_parents(config_dir_file, NULL, error);
   }
 
-  assert(config_dir_monitor == NULL);
-  config_dir_monitor =
-      g_file_monitor_directory(config_dir_file, G_FILE_MONITOR_NONE, NULL, NULL);
-  if (config_dir_monitor == NULL) {
+  assert(*monitor == NULL);
+  *monitor = g_file_monitor_directory(
+      config_dir_file, G_FILE_MONITOR_NONE, NULL, NULL);
+  if (*monitor == NULL) {
     // We don't consider this to be a fatal error, because the user can always
     // refresh manually (and box configs don't change that often, anyway).
     g_warning("Failed to monitor config directory (%s).\n", config_dir);
-  } else {
-    g_signal_connect(
-        config_dir_monitor, "changed", G_CALLBACK(config_dir_changed), NULL);
   }
   g_object_unref(config_dir_file);
   return success;
 }
 
-static void activate_application(GtkApplication *app, gpointer user_data) {
-  if (application != NULL) {
-    // activate has been called before. Don't reinitialize anything.
-    return;
-  }
-
-  application = app;
-  config_dir = make_config_dir();
-
-  GError *error = NULL;
-  setup_config_dir(&error);
-  if (error != NULL) {
-    show_error(error);
-    g_error_free(error);
-    return;
-  }
-
-  load_icons(&error);
-  if (error != NULL) {
-    show_error(error);
-    g_error_free(error);
-    return;
-  }
-
-  status_icon = gtk_status_icon_new_from_pixbuf(icon_box_error);
-  if (status_icon == NULL) {
-    show_error_message("Failed to created status icon!");
-    return;
-  }
-  gtk_status_icon_set_title(status_icon, APP_TITLE);
-  gtk_status_icon_set_tooltip_text(status_icon, "Click here to list available boxes.");
-  g_signal_connect(
-      status_icon, "activate", G_CALLBACK(activate_status_icon), NULL);
-  g_signal_connect(
-      status_icon, "popup-menu", G_CALLBACK(popup_menu_status_icon), NULL);
-
-  assert(boxes == NULL);
-  boxes = new_box_array();
-  reload_boxes();
-
-  // Explicitly hold the application since we didn't create a main window, but
-  // we did pop up a status icon, and we want to continue running until the user
-  // clicks on it.
-  g_application_hold(G_APPLICATION(application));
+struct LootApp *app_create() {
+  struct LootApp *app = calloc(1, sizeof(struct LootApp));
+  assert(app != NULL);
+  return app;
 }
 
-int main (int argc, char **argv) {
-  GtkApplication *app = gtk_application_new(
-      "ch.verver.maks.loot", G_APPLICATION_FLAGS_NONE);
-  g_signal_connect(
-      app, "activate", G_CALLBACK(activate_application), NULL);
-  int status = g_application_run(G_APPLICATION(app), argc, argv);
-  g_object_unref(app);
+gboolean app_initialize(struct LootApp *app, GtkApplication *gtk_app) {
+  if (app->gtk_app != NULL) {
+    // Already initialized.
+    return FALSE;
+  }
 
-  if (boxes) {
-    g_array_free(boxes, TRUE);
+  g_object_ref(gtk_app);
+  app->gtk_app = gtk_app;
+
+  app->config_dir = make_config_dir();
+
+  GError *error = NULL;
+  setup_config_dir(app->config_dir, &app->config_dir_monitor, &error);
+  if (error != NULL) {
+    show_error(error);
+    g_error_free(error);
+    return FALSE;
   }
-  if (icon_box_closed) {
-    g_object_unref(icon_box_closed);
+
+  load_icons(&app->icons, &error);
+  if (error != NULL) {
+    show_error(error);
+    g_error_free(error);
+    return FALSE;
   }
-  if (icon_box_opened) {
-    g_object_unref(icon_box_opened);
+
+  app->status_icon = gtk_status_icon_new_from_pixbuf(app->icons.box_error);
+  if (app->status_icon == NULL) {
+    show_error_message("Failed to created status icon!");
+    return FALSE;
   }
-  if (icon_box_error) {
-    g_object_unref(icon_box_error);
+  gtk_status_icon_set_title(app->status_icon, APP_TITLE);
+  gtk_status_icon_set_tooltip_text(
+      app->status_icon, "Click here to list available boxes.");
+
+  assert(app->boxes == NULL);
+  app->boxes = new_box_array();
+
+  // app structure is now fully initialized.
+
+  reload_boxes(app);
+
+  // Connect signal handlers.
+  g_signal_connect(
+      app->status_icon, "activate", G_CALLBACK(activate_status_icon), app);
+  g_signal_connect(
+      app->status_icon, "popup-menu", G_CALLBACK(popup_menu_status_icon), app);
+  if (app->config_dir_monitor != NULL) {
+    g_signal_connect(
+      app->config_dir_monitor, "changed", G_CALLBACK(config_dir_changed), app);
   }
-  if (icon_quit) {
-    g_object_unref(icon_quit);
+
+  return TRUE;
+}
+
+void app_destroy(struct LootApp *app) {
+  if (app->boxes) {
+    g_array_free(app->boxes, TRUE);
+    app->boxes = NULL;
   }
-  if (icon_reload) {
-    g_object_unref(icon_reload);
+  if (app->status_icon != NULL) {
+    g_object_unref(app->status_icon);
   }
-  if (config_dir) {
-    g_free((gpointer)config_dir);
+  unload_icons(&app->icons);
+  if (app->config_dir_monitor != NULL) {
+    g_object_unref(app->config_dir_monitor);
   }
-  if (config_dir_monitor) {
-    g_object_unref(config_dir_monitor);
+  g_free((gchar*)app->config_dir);
+  if (app->gtk_app != NULL) {
+    g_object_unref(app->gtk_app);
   }
+  free(app);
+}
+
+static void activate_gtk_app(GtkApplication *gtk_app, gpointer user_data) {
+  struct LootApp *loot_app = user_data;
+  if (app_initialize(loot_app, gtk_app)) {
+    // Explicitly hold the gtk_app since we didn't create a main window,
+    // but we did pop up a status icon, and we want to continue running until
+    // the user clicks on it.
+    g_application_hold(G_APPLICATION(gtk_app));
+  }
+}
+
+int main(int argc, char **argv) {
+  struct LootApp *loot_app = app_create();
+  GtkApplication *gtk_app =
+      gtk_application_new(APP_ID, G_APPLICATION_FLAGS_NONE);
+  g_signal_connect(
+      gtk_app, "activate", G_CALLBACK(activate_gtk_app), loot_app);
+  int status = g_application_run(G_APPLICATION(gtk_app), argc, argv);
+  g_object_unref(gtk_app);
+  app_destroy(loot_app);
   return status;
 }
