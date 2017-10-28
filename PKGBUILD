@@ -1,5 +1,5 @@
 pkgname=loot
-pkgver=0.9
+pkgver=1.0
 pkgrel=1
 arch=('i686' 'x86_64')
 depends=('gtk3')
