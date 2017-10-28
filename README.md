@@ -1,5 +1,7 @@
 Loot is a simple GUI tool to manage resources which can be opened and closed.
 
+![Screenshot](https://raw.githubusercontent.com/maksverver/loot/master/artwork/screenshot.png)
+
 For example, you can use this to easily mount/unmount network shares.
 
 Loot is visible as a status icon in the notification area. When clicked, it pops
