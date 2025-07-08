@@ -1,5 +1,12 @@
-CFLAGS=`pkg-config --cflags gtk+-3.0` -Wall -O2 -std=c99 -g -Wno-deprecated-declarations
-LDLIBS=`pkg-config --libs gtk+-3.0` 
+ifndef ICONS_PREFIX
+ICONS_PREFIX=$(shell realpath icons)
+endif
+
+CFLAGS ?= -O2 -Wall -g
+
+CF=$(shell pkg-config --cflags gtk+-3.0 appindicator3-0.1) -DICONS_PREFIX="$(ICONS_PREFIX)" $(CPPFLAGS) $(CFLAGS)
+LF=$(LDFLAGS)
+LL=$(shell pkg-config --libs gtk+-3.0 appindicator3-0.1) $(LDLISB)
 
 BIN=loot
 OBJS=loot.o icons.o
@@ -11,15 +18,12 @@ icons.o: $(ICONS)
 	ld -r -b binary -o $@ $(ICONS)
 
 loot.o: loot.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CF) -c $< -o $@
 
 loot: $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) $(LDLIBS) -o $@
+	$(CC) $(CF) $(LF) $(OBJS) $(LL) -o $@
 
 clean:
 	rm -f $(OBJS) $(BIN)
-
-install: $(BIN)
-	install -D -s $(BIN) "${DESTDIR}"/usr/bin/$(BIN)
 
 .PHONY: all clean install
