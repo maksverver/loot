@@ -1,0 +1,15 @@
+  - Maybe: replace code that loads icons from embedded resources with code
+    to load them from files (and update Makefile to no longer link in icons).
+
+    Context: originally I designed the code so that icon files get linked into
+    the binary (see icons.o and "ld -r -b binary" in the Makefile), which is
+    convenient because it makes it unnecessary to install the icons separately,
+    and makes it easy to find them at runtime without knowing the installation
+    path.
+
+    However, libappindicator doesn't support this. It requires an absolute path
+    to an icon file in PNG format, which requires installing those files
+    explicitly. Consequently, the icons are currently included twice: both as
+    individual files in the /usr/share/loot/icons/ directory, and linked into
+    the /usr/bin/loot binary. This is clearly redundant. It might make sense to
+    simplify the situation by loading icons from files in the main binary too.
